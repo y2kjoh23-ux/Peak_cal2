@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { PowerCalculation, AISSSetting } from './types';
 import { CT_VALUES, PT_RATIO, MAX_TR_MULTIPLIER, AISS_CONFIG_TABLE } from './constants';
 
-const APP_VERSION = "v 1.3";
+const APP_VERSION = "v 1.4";
 
 const App: React.FC = () => {
   const [inputDigits, setInputDigits] = useState<string[]>(() => {
@@ -12,6 +12,8 @@ const App: React.FC = () => {
   });
   const [isActive, setIsActive] = useState(false);
   const [isFlashOn, setIsFlashOn] = useState(false);
+  // 안드로이드인 경우 기본적으로 플래시가 있다고 가정하여 버튼을 보여줌
+  const [isAndroid] = useState(/Android/i.test(navigator.userAgent));
   const [hasFlash, setHasFlash] = useState(false); 
   const [isScrolling, setIsScrolling] = useState(false);
   const [selectedRowIndex, setSelectedRowIndex] = useState<number>(() => {
@@ -29,10 +31,11 @@ const App: React.FC = () => {
   const itemLongPressTimerRef = useRef<number | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
-  // iOS 여부 확인 (화이트 스크린 대체 조명은 iOS에서만 허용)
   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
 
   useEffect(() => {
+    // 안드로이드 갤럭시의 경우 시작 시 권한 팝업 없이 기능을 체크할 수 있는 방법이 제한적이므로
+    // 버튼을 일단 보여주고, 첫 클릭 시 권한을 얻어 하드웨어를 제어합니다.
     return () => {
       stopCamera();
     };
@@ -72,9 +75,14 @@ const App: React.FC = () => {
     if (isCameraInitializing) return null;
     setIsCameraInitializing(true);
     try {
+      // 플래시(Torch)를 제어하려면 브라우저 보안 정책상 '카메라 권한'이 반드시 필요합니다.
+      // 실제 영상을 찍지는 않지만 하드웨어 접근을 위해 필요함을 사용자에게 알리는 과정이 수반됩니다.
       const stream = await navigator.mediaDevices.getUserMedia({ 
         video: { 
-          facingMode: 'environment'
+          facingMode: 'environment',
+          // 갤럭시 등 안드로이드 최적화 제약 조건
+          focusMode: 'continuous' as any,
+          whiteBalanceMode: 'continuous' as any
         } 
       });
       
@@ -87,13 +95,15 @@ const App: React.FC = () => {
         setIsCameraInitializing(false);
         return track;
       } else {
+        // 플래시 기능이 없는 기기라면 플래시 상태 해제
         setHasFlash(false);
         track.stop();
         setIsCameraInitializing(false);
         return null;
       }
     } catch (err) {
-      console.error("Camera init failed:", err);
+      console.error("Flash(Camera) init failed:", err);
+      // 권한 거부 시 다시 묻지 않도록 상태 관리 필요 시 로직 추가 가능
       setHasFlash(false);
       setIsCameraInitializing(false);
       return null;
@@ -115,7 +125,8 @@ const App: React.FC = () => {
         } as any);
         setIsFlashOn(newState);
       } catch (err) {
-        console.error("Flash toggle failed:", err);
+        console.error("Torch control failed:", err);
+        // 트랙이 유효하지 않으면 다시 시도
         const retryTrack = await initCamera();
         if (retryTrack) {
           try {
@@ -129,6 +140,7 @@ const App: React.FC = () => {
         }
       }
     } else {
+      // 하드웨어 지원이 없거나 권한이 없는 경우 (iOS는 화면 조명, 안드로이드는 무반응 혹은 화면 조명 선택 가능)
       setIsFlashOn(newState);
     }
     
@@ -241,22 +253,24 @@ const App: React.FC = () => {
       const [intPart, decPart] = peakStr.split('.');
       return (
         <div className={`flex items-baseline font-extrabold tabular ${colorClass}`}>
-          <span className="text-[26px]">{intPart}</span>
-          <span className="text-[18px] opacity-80">.{decPart}</span>
+          <span className="text-[25px]">{intPart}</span>
+          <span className="text-[17px] opacity-80">.{decPart}</span>
         </div>
       );
     }
     
     return (
-      <div className={`font-extrabold text-[26px] tabular ${colorClass}`}>
+      <div className={`font-extrabold text-[25px] tabular ${colorClass}`}>
         {peakStr}
       </div>
     );
   };
 
   const renderFlashButton = (isTop: boolean) => {
-    // 상단 사이드 버튼은 하드웨어 플래시 지원이 확인된 경우에만 자동으로 표시
-    if (isTop && !hasFlash) return null;
+    // 안드로이드라면 일단 플래시가 있다고 가정하고 보여줌 (갤럭시 대부분 존재)
+    // iOS의 경우 하드웨어 플래시가 확인되었거나, 아직 확인 전이라면 보여줌
+    const shouldShow = isAndroid || hasFlash || (!isCameraInitializing && !videoTrackRef.current);
+    if (isTop && !shouldShow) return null;
 
     return (
       <button 
@@ -266,8 +280,8 @@ const App: React.FC = () => {
         {isFlashOn && (
           <div className="absolute top-1.5 right-1.5 w-2.5 h-2.5 bg-blue-500 rounded-full shadow-[0_0_12px_rgba(59,130,246,0.9)] animate-pulse z-10"></div>
         )}
-        <i className={`fa-solid ${isFlashOn ? 'fa-lightbulb' : 'fa-bolt'} text-2xl transition-transform`}></i>
-        <span className="text-[9px] font-bold mt-1 uppercase">{hasFlash ? 'FLASH' : 'LIGHT'}</span>
+        <i className={`fa-solid ${isFlashOn ? 'fa-lightbulb' : 'fa-bolt'} text-xl transition-transform`}></i>
+        <span className="text-[9px] font-bold mt-0.5 uppercase">LIGHT</span>
       </button>
     );
   };
@@ -275,7 +289,7 @@ const App: React.FC = () => {
   return (
     <div className="flex flex-col h-screen bg-slate-900 text-slate-100 max-w-md mx-auto shadow-2xl overflow-hidden select-none relative">
       
-      {/* 안드로이드에서는 기대되지 않는 동작이므로, iOS 기기에서 하드웨어가 없을 때만 화이트 스크린 조명 활성화 */}
+      {/* iOS 등 하드웨어 지원이 안되는 환경에서만 화이트 스크린 조명 사용 (사용자 요청 반영) */}
       {isIOS && !hasFlash && isFlashOn && (
         <div className="fixed inset-0 z-[100] bg-white animate-in fade-in duration-300 flex flex-col items-center justify-center cursor-pointer" onClick={() => toggleFlash(false)}>
           <i className="fa-solid fa-lightbulb text-slate-200 text-6xl animate-pulse"></i>
@@ -302,8 +316,9 @@ const App: React.FC = () => {
         </div>
       </header>
 
+      {/* 입력창 영역: 높이 3% 축소 (84px -> 81px) */}
       <div className="p-3 bg-slate-800/80 backdrop-blur-sm border-b border-slate-700 shadow-xl relative z-10">
-        <div className="h-[84px] flex items-stretch gap-3">
+        <div className="h-[81px] flex items-stretch gap-3">
           {renderFlashButton(true)}
           
           <div className="flex-[4] bg-slate-950 rounded-2xl p-1 flex flex-col items-center justify-center shadow-inner relative overflow-hidden border border-white/5">
@@ -327,8 +342,9 @@ const App: React.FC = () => {
         </div>
       </div>
 
+      {/* 리스트 본문: 행 높이 3% 축소 (64px -> 62px) */}
       <div ref={scrollContainerRef} className={`flex-1 overflow-y-auto bg-slate-900 px-2 py-3 custom-scrollbar ${isScrolling ? 'is-scrolling' : ''}`}>
-        <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-2.5">
           {powerData.map((row, idx) => (
             <div 
               key={idx} 
@@ -336,11 +352,11 @@ const App: React.FC = () => {
               onMouseUp={() => onItemPressEnd(idx)}
               onTouchStart={() => onItemPressStart(row, idx)}
               onTouchEnd={() => onItemPressEnd(idx)}
-              className={`h-[64px] grid grid-cols-[1fr_1fr_1.3fr_1.7fr] items-center rounded-2xl transition-all duration-200 cursor-pointer border ${selectedRowIndex === idx ? 'bg-blue-600 border-blue-400 shadow-[0_8px_25px_rgba(37,99,235,0.4)] scale-[1.01] z-10' : 'bg-slate-800/40 border-slate-700/50 hover:bg-slate-800/60'}`}
+              className={`h-[62px] grid grid-cols-[1fr_1fr_1.3fr_1.7fr] items-center rounded-2xl transition-all duration-200 cursor-pointer border ${selectedRowIndex === idx ? 'bg-blue-600 border-blue-400 shadow-[0_8px_25px_rgba(37,99,235,0.4)] scale-[1.01] z-10' : 'bg-slate-800/40 border-slate-700/50 hover:bg-slate-800/60'}`}
             >
-              <div className="text-center font-bold text-[18px] tabular">{row.maxTR}</div>
-              <div className="text-center font-semibold text-[18px] tabular opacity-80">{row.ct}</div>
-              <div className={`text-center font-bold text-[21px] tabular ${selectedRowIndex === idx ? 'text-amber-200' : 'text-white'}`}>{row.mof}</div>
+              <div className="text-center font-bold text-[17px] tabular">{row.maxTR}</div>
+              <div className="text-center font-semibold text-[17px] tabular opacity-80">{row.ct}</div>
+              <div className={`text-center font-bold text-[19px] tabular ${selectedRowIndex === idx ? 'text-amber-200' : 'text-white'}`}>{row.mof}</div>
               <div className="flex items-center justify-center">
                 {renderPeakCell(row.peakPower, selectedRowIndex === idx)}
               </div>
@@ -349,7 +365,8 @@ const App: React.FC = () => {
         </div>
       </div>
 
-      <div className="bg-slate-950 p-3 pb-safe grid grid-cols-3 gap-3 border-t border-white/5 shadow-2xl">
+      {/* 키패드: 버튼 높이 5% 축소 (58px -> 55px) */}
+      <div className="bg-slate-950 p-3 pb-safe grid grid-cols-3 gap-2.5 border-t border-white/5 shadow-2xl">
         {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map(num => (
           <KeypadButton key={num} label={num} isNumber onClick={() => handleKeyPress(num)} />
         ))}
@@ -360,8 +377,8 @@ const App: React.FC = () => {
               {isFlashOn && (
                 <div className="absolute top-1.5 right-1.5 w-2.5 h-2.5 bg-blue-500 rounded-full shadow-[0_0_12px_rgba(59,130,246,0.9)] animate-pulse z-10"></div>
               )}
-              <i className={`fa-solid ${isFlashOn ? 'fa-lightbulb' : 'fa-bolt'} text-2xl transition-transform ${isFlashOn ? 'scale-110' : ''}`}></i>
-              <span className="text-[10px] font-bold mt-1 leading-none uppercase">{hasFlash ? 'FLASH' : 'LIGHT'}</span>
+              <i className={`fa-solid ${isFlashOn ? 'fa-lightbulb' : 'fa-bolt'} text-xl transition-transform ${isFlashOn ? 'scale-110' : ''}`}></i>
+              <span className="text-[10px] font-bold mt-1 leading-none uppercase">LIGHT</span>
             </div>
           }
           onClick={() => handleKeyPress('FLASH')}
@@ -449,7 +466,7 @@ const KeypadButton: React.FC<KeypadButtonProps> = ({
     onTouchStart={onTouchStart}
     onTouchEnd={onTouchEnd}
     className={`
-      h-[58px] bg-slate-800/60 active:bg-slate-700/80 text-white 
+      h-[55px] bg-slate-800/60 active:bg-slate-700/80 text-white 
       rounded-2xl transition-all active:scale-[0.95] flex items-center justify-center 
       border border-white/5 shadow-lg tabular relative
       ${isNumber ? 'text-3xl font-semibold' : ''} 
