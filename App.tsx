@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { PowerCalculation, AISSSetting } from './types';
 import { CT_VALUES, PT_RATIO, MAX_TR_MULTIPLIER, AISS_CONFIG_TABLE } from './constants';
 
-const APP_VERSION = "v 1.7";
+const APP_VERSION = "v 1.8";
 
 const App: React.FC = () => {
   const [inputDigits, setInputDigits] = useState<string[]>(() => {
@@ -13,7 +13,7 @@ const App: React.FC = () => {
   const [isActive, setIsActive] = useState(false);
   const [isFlashOn, setIsFlashOn] = useState(false);
   const [isAndroid] = useState(/Android/i.test(navigator.userAgent));
-  const [hasFlash, setHasFlash] = useState(true); // 안드로이드는 일단 있다고 가정
+  const [hasFlash, setHasFlash] = useState(true); 
   const [isScrolling, setIsScrolling] = useState(false);
   const [selectedRowIndex, setSelectedRowIndex] = useState<number>(() => {
     const saved = localStorage.getItem('selected_index');
@@ -65,6 +65,9 @@ const App: React.FC = () => {
 
   const stopCamera = () => {
     if (videoTrackRef.current) {
+      try {
+        videoTrackRef.current.applyConstraints({ advanced: [{ torch: false }] } as any);
+      } catch (e) {}
       videoTrackRef.current.stop();
       videoTrackRef.current = null;
     }
@@ -82,7 +85,7 @@ const App: React.FC = () => {
     setIsCameraInitializing(true);
     
     try {
-      // 해상도를 낮게 설정하여 하드웨어 부담을 줄임 (플래시에 집중)
+      // 안드로이드 특성상 매번 새로운 스트림을 요청하는 것이 가장 확실함
       const stream = await navigator.mediaDevices.getUserMedia({ 
         video: { 
           facingMode: 'environment',
@@ -96,21 +99,9 @@ const App: React.FC = () => {
       
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        // 메타데이터 로드 대기 후 재생 시작
-        await new Promise((resolve) => {
-          if (videoRef.current) {
-            videoRef.current.onloadedmetadata = () => resolve(true);
-          } else resolve(false);
-        });
         await videoRef.current.play();
       }
 
-      // 트랙 상태 확인을 위해 약간의 지연
-      await new Promise(r => setTimeout(r, 200));
-
-      const capabilities = (track.getCapabilities && track.getCapabilities()) as any;
-      
-      // 만약 capabilities에서 torch가 없다고 나와도, 안드로이드 크롬 버그일 수 있으므로 일단 시도함
       videoTrackRef.current = track;
       setIsCameraInitializing(false);
       return track;
@@ -124,48 +115,36 @@ const App: React.FC = () => {
   const toggleFlash = async (state?: boolean) => {
     const newState = state !== undefined ? state : !isFlashOn;
     
-    if ('vibrate' in navigator) navigator.vibrate(newState ? [30, 10, 30] : 20);
+    if ('vibrate' in navigator) navigator.vibrate(newState ? [40, 20, 40] : 30);
 
     if (!newState) {
-      if (videoTrackRef.current) {
-        try {
-          await videoTrackRef.current.applyConstraints({ advanced: [{ torch: false }] } as any);
-        } catch (e) {}
-      }
       setIsFlashOn(false);
-      stopCamera(); // 완전히 끔
+      stopCamera();
       return;
     }
 
-    // 켜기 시도
-    let track = videoTrackRef.current;
-    if (!track || track.readyState === 'ended') {
-      track = await initCamera();
-    }
+    // 켜기 시도 (매번 초기화하여 하드웨어 우선순위 확보)
+    stopCamera();
+    const track = await initCamera();
 
     if (track) {
-      const applyTorch = async (retryCount = 0) => {
+      setIsFlashOn(true);
+      
+      // 안드로이드 핵심: 연속해서 3번 제약 조건을 밀어넣어 하드웨어 반응 유도
+      let count = 0;
+      const interval = setInterval(async () => {
         try {
-          // 안드로이드 특정 기기는 'torch' 설정을 여러 번 밀어넣어야 반응함
-          await track!.applyConstraints({ 
+          await track.applyConstraints({ 
             advanced: [{ torch: true }] 
           } as any);
-          setIsFlashOn(true);
-        } catch (err) {
-          if (retryCount < 3) {
-            setTimeout(() => applyTorch(retryCount + 1), 300);
-          } else {
-            console.error("Flash final failure", err);
-            // 최후의 수단: iOS 방식처럼 화면 조명이라도 켜지게 상태 유지
-            setIsFlashOn(true);
-          }
+          if (count++ > 2) clearInterval(interval);
+        } catch (e) {
+          if (count++ > 2) clearInterval(interval);
         }
-      };
-      
-      // 초기 지연 후 실행 (하드웨어 웜업)
-      setTimeout(() => applyTorch(), 300);
+      }, 200);
     } else {
-      setIsFlashOn(newState);
+      // 하드웨어 실패 시 스크린 라이트 모드로 전환
+      setIsFlashOn(true);
     }
   };
 
@@ -291,7 +270,6 @@ const App: React.FC = () => {
   };
 
   const renderFlashButton = (isTop: boolean) => {
-    // 안드로이드는 항상 표시, iOS는 플래시가 확인되었거나 초기 상태일 때 표시
     const shouldShow = isAndroid || hasFlash;
     if (isTop && !shouldShow) return null;
 
@@ -312,22 +290,20 @@ const App: React.FC = () => {
   return (
     <div className="flex flex-col h-screen bg-slate-900 text-slate-100 max-w-md mx-auto shadow-2xl overflow-hidden select-none relative">
       
-      {/* 안드로이드 동기화를 위해 필요한 비디오 싱크 (최소 크기로 유지) */}
-      <video 
-        ref={videoRef} 
-        playsInline 
-        muted 
-        style={{ position: 'absolute', width: '2px', height: '2px', top: 0, left: 0, opacity: 0.01, pointerEvents: 'none', zIndex: -1 }}
-      />
+      {/* 하드웨어 싱크용 비디오 */}
+      <video ref={videoRef} playsInline muted style={{ position: 'absolute', width: '2px', height: '2px', opacity: 0 }} />
 
-      {isIOS && !hasFlash && isFlashOn && (
-        <div className="fixed inset-0 z-[100] bg-white animate-in fade-in duration-300 flex flex-col items-center justify-center cursor-pointer" onClick={() => toggleFlash(false)}>
-          <i className="fa-solid fa-lightbulb text-slate-200 text-6xl animate-pulse"></i>
-          <div className="mt-10 px-8 py-4 border-2 border-slate-200 text-slate-500 rounded-full text-sm font-black tracking-widest uppercase">TAP TO CLOSE</div>
+      {/* 조명 모드 백업: 플래시가 안 켜져도 화면 조명을 통해 계량기를 비출 수 있게 함 */}
+      {isFlashOn && (
+        <div className="fixed inset-0 z-[100] bg-white animate-in fade-in duration-500 flex flex-col items-center justify-center cursor-pointer" onClick={() => toggleFlash(false)}>
+          <div className="flex flex-col items-center scale-110">
+            <i className="fa-solid fa-lightbulb text-slate-200 text-8xl animate-pulse"></i>
+            <div className="mt-12 px-10 py-5 border-4 border-slate-100 text-slate-400 rounded-full text-lg font-black tracking-[0.2em] uppercase">TAP TO CLOSE</div>
+          </div>
         </div>
       )}
 
-      <header className={`h-[44px] flex items-center justify-between pl-4 pr-0 bg-slate-950 text-white z-20 border-b transition-all duration-300 ${isFlashOn ? 'border-amber-500/50 shadow-[0_0_10px_rgba(245,158,11,0.2)]' : 'border-white/5'}`}>
+      <header className="h-[44px] flex items-center justify-between pl-4 pr-0 bg-slate-950 text-white z-20 border-b border-white/5 shadow-lg">
         <div className="flex items-center gap-2">
           <i className="fa-solid fa-bolt-lightning text-[12px] text-blue-500"></i>
           <div className="flex items-baseline">
@@ -346,7 +322,7 @@ const App: React.FC = () => {
         </div>
       </header>
 
-      {/* 입력창 높이 78px */}
+      {/* 입력창 높이 78px 고정 */}
       <div className="p-3 bg-slate-800/80 backdrop-blur-sm border-b border-slate-700 shadow-xl relative z-10">
         <div className="h-[78px] flex items-stretch gap-3">
           {renderFlashButton(true)}
@@ -372,7 +348,7 @@ const App: React.FC = () => {
         </div>
       </div>
 
-      {/* 행 높이 60px */}
+      {/* 행 높이 60px 고정 */}
       <div ref={scrollContainerRef} className={`flex-1 overflow-y-auto bg-slate-900 px-2 py-3 custom-scrollbar ${isScrolling ? 'is-scrolling' : ''}`}>
         <div className="flex flex-col gap-2.5">
           {powerData.map((row, idx) => (
@@ -395,7 +371,7 @@ const App: React.FC = () => {
         </div>
       </div>
 
-      {/* 키패드 버튼 높이 52px */}
+      {/* 키패드 버튼 높이 52px 고정 */}
       <div className="bg-slate-950 p-3 pb-safe grid grid-cols-3 gap-2 border-t border-white/5 shadow-2xl">
         {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map(num => (
           <KeypadButton key={num} label={num} isNumber onClick={() => handleKeyPress(num)} />
