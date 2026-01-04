@@ -1,25 +1,20 @@
 
-export interface ResourceConfig {
-  currentAmount: number;
-  dailyIncome: number;
-  targetAmount: number;
-  bonusPercentage: number;
+export interface PowerCalculation {
+  maxTR: number;
+  ct: number;
+  mof: number;
+  peakPower: string;
 }
 
-export interface PeakSimulation {
-  date: string;
-  amount: number;
-  isPeak: boolean;
+export interface AISSSetting {
+  ct: number;
+  maxTR: number;
+  phaseCurrent: string;
+  groundCurrent: string;
+  timeDelay: string;
 }
 
-export interface AIAdvice {
-  summary: string;
-  recommendations: string[];
-  efficiencyRating: number;
-  estimatedPeakDate: string;
-}
-
-export enum CalculationMode {
-  RESOURCES = 'RESOURCES',
-  RAID_SCORE = 'RAID_SCORE',
+export interface DeviceStatus {
+  hasFlash: boolean;
+  isFlashOn: boolean;
 }

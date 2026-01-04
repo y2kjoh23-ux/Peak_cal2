@@ -1,321 +1,413 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
-import { 
-  LineChart, 
-  Line, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip, 
-  ResponsiveContainer,
-  AreaChart,
-  Area
-} from 'recharts';
-import { 
-  TrendingUp, 
-  Target, 
-  Calendar, 
-  Zap, 
-  BrainCircuit, 
-  ChevronRight,
-  Info,
-  RefreshCw
-} from 'lucide-react';
-import { ResourceConfig, PeakSimulation, AIAdvice, CalculationMode } from './types';
-import { getAIAdvice } from './services/geminiService';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { PowerCalculation, AISSSetting } from './types';
+import { CT_VALUES, PT_RATIO, MAX_TR_MULTIPLIER, AISS_CONFIG_TABLE } from './constants';
 
 const App: React.FC = () => {
-  const [config, setConfig] = useState<ResourceConfig>({
-    currentAmount: 12000,
-    dailyIncome: 450,
-    targetAmount: 24000,
-    bonusPercentage: 10
+  const [inputDigits, setInputDigits] = useState<string[]>(() => {
+    const saved = localStorage.getItem('last_input_digits');
+    return saved ? JSON.parse(saved) : ['0', '0', '0', '0'];
   });
+  const [isActive, setIsActive] = useState(false);
+  const [isFlashOn, setIsFlashOn] = useState(false);
+  const [hasFlash, setHasFlash] = useState(false); 
+  const [isScrolling, setIsScrolling] = useState(false);
+  const [selectedRowIndex, setSelectedRowIndex] = useState<number>(() => {
+    const saved = localStorage.getItem('selected_index');
+    return saved !== null ? parseInt(saved, 10) : 2;
+  });
+  const [aissPopup, setAissPopup] = useState<AISSSetting | null>(null);
+  const [lastInputTime, setLastInputTime] = useState(0);
+  
+  const videoTrackRef = useRef<MediaStreamTrack | null>(null);
+  const timerRef = useRef<number | null>(null);
+  const scrollTimerRef = useRef<number | null>(null);
+  const backLongPressTimerRef = useRef<number | null>(null);
+  const itemLongPressTimerRef = useRef<number | null>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
-  const [aiAdvice, setAiAdvice] = useState<AIAdvice | null>(null);
-  const [isLoadingAI, setIsLoadingAI] = useState(false);
-  const [mode, setMode] = useState<CalculationMode>(CalculationMode.RESOURCES);
+  useEffect(() => {
+    initCamera();
+  }, []);
 
-  // Simulation logic
-  const simulationData = useMemo(() => {
-    const data: PeakSimulation[] = [];
-    let current = config.currentAmount;
-    const dailyWithBonus = config.dailyIncome * (1 + config.bonusPercentage / 100);
-    
-    const today = new Date();
-    for (let i = 0; i < 60; i++) {
-      const date = new Date(today);
-      date.setDate(today.getDate() + i);
-      data.push({
-        date: date.toLocaleDateString('ko-KR', { month: 'short', day: 'numeric' }),
-        amount: Math.floor(current),
-        isPeak: current >= config.targetAmount
-      });
-      current += dailyWithBonus;
+  useEffect(() => {
+    localStorage.setItem('selected_index', selectedRowIndex.toString());
+  }, [selectedRowIndex]);
+
+  useEffect(() => {
+    localStorage.setItem('last_input_digits', JSON.stringify(inputDigits));
+    setLastInputTime(Date.now());
+  }, [inputDigits]);
+
+  const handleScroll = useCallback(() => {
+    setIsScrolling(true);
+    if (scrollTimerRef.current) window.clearTimeout(scrollTimerRef.current);
+    scrollTimerRef.current = window.setTimeout(() => setIsScrolling(false), 1000);
+  }, []);
+
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (container) {
+      container.addEventListener('scroll', handleScroll, { passive: true });
     }
-    return data;
-  }, [config]);
+    return () => container?.removeEventListener('scroll', handleScroll);
+  }, [handleScroll]);
 
-  const daysToTarget = useMemo(() => {
-    const dailyWithBonus = config.dailyIncome * (1 + config.bonusPercentage / 100);
-    const needed = config.targetAmount - config.currentAmount;
-    return needed <= 0 ? 0 : Math.ceil(needed / dailyWithBonus);
-  }, [config]);
+  const toggleFlash = async (state?: boolean) => {
+    const newState = state !== undefined ? state : !isFlashOn;
+    if (hasFlash && videoTrackRef.current) {
+      try {
+        await videoTrackRef.current.applyConstraints({ advanced: [{ torch: newState }] } as any);
+      } catch (err) {
+        console.error("Flash error:", err);
+      }
+    } 
+    setIsFlashOn(newState);
+    if ('vibrate' in navigator) navigator.vibrate(newState ? [30, 10, 30] : 20);
+  };
 
-  const handleAIAnalysis = async () => {
-    setIsLoadingAI(true);
+  const initCamera = async () => {
     try {
-      const advice = await getAIAdvice(config);
-      setAiAdvice(advice);
-    } catch (error) {
-      console.error(error);
-    } finally {
-      setIsLoadingAI(false);
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      const track = stream.getVideoTracks()[0];
+      const capabilities = (track.getCapabilities && track.getCapabilities()) as any;
+      if (capabilities && capabilities.torch) {
+        setHasFlash(true);
+        videoTrackRef.current = track;
+      } else {
+        setHasFlash(false);
+        stream.getTracks().forEach(t => t.stop());
+      }
+    } catch (err) {
+      setHasFlash(false);
     }
   };
 
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.hidden && isFlashOn) toggleFlash(false);
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (videoTrackRef.current) {
+        videoTrackRef.current.applyConstraints({ advanced: [{ torch: false }] } as any);
+        videoTrackRef.current.stop();
+      }
+    };
+  }, [isFlashOn]);
+
+  const resetTimer = () => {
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+    setIsActive(true);
+    timerRef.current = window.setTimeout(() => setIsActive(false), 2000);
+  };
+
+  const handleKeyPress = (key: string) => {
+    resetTimer();
+    if ('vibrate' in navigator) navigator.vibrate(12);
+    
+    if (key === 'FLASH') {
+      toggleFlash();
+      return;
+    }
+    if (key === 'BACK') {
+      setInputDigits(prev => ['0', prev[0], prev[1], prev[2]]);
+      return;
+    }
+    if (key === 'CLEAR_ALL') {
+      setInputDigits(['0', '0', '0', '0']);
+      if ('vibrate' in navigator) navigator.vibrate([50, 30, 50]);
+      return;
+    }
+    setInputDigits(prev => {
+      if (!isActive) return ['0', '0', '0', key];
+      return [prev[1], prev[2], prev[3], key];
+    });
+  };
+
+  const onBackStart = () => {
+    backLongPressTimerRef.current = window.setTimeout(() => {
+      handleKeyPress('CLEAR_ALL');
+      backLongPressTimerRef.current = null;
+    }, 600);
+  };
+
+  const onBackEnd = () => {
+    if (backLongPressTimerRef.current) {
+      window.clearTimeout(backLongPressTimerRef.current);
+      backLongPressTimerRef.current = null;
+      handleKeyPress('BACK');
+    }
+  };
+
+  const onItemPressStart = (row: PowerCalculation, idx: number) => {
+    itemLongPressTimerRef.current = window.setTimeout(() => {
+      const config = AISS_CONFIG_TABLE.find(c => row.maxTR <= c.limit) || AISS_CONFIG_TABLE[AISS_CONFIG_TABLE.length - 1];
+      setAissPopup({
+        ct: row.ct,
+        maxTR: row.maxTR,
+        phaseCurrent: config.phase,
+        groundCurrent: config.ground,
+        timeDelay: config.delay
+      });
+      if ('vibrate' in navigator) navigator.vibrate(40);
+      itemLongPressTimerRef.current = null;
+    }, 600);
+  };
+
+  const onItemPressEnd = (idx: number) => {
+    if (itemLongPressTimerRef.current) {
+      window.clearTimeout(itemLongPressTimerRef.current);
+      itemLongPressTimerRef.current = null;
+      setSelectedRowIndex(idx);
+      if ('vibrate' in navigator) navigator.vibrate(10);
+    }
+  };
+
+  const formatValue = (digits: string[]) => `${digits[0]}.${digits[1]}${digits[2]}${digits[3]}`;
+  const displayValue = formatValue(inputDigits);
+
+  const calculatePowerData = (val: string): PowerCalculation[] => {
+    const numericVal = parseFloat(val) || 0;
+    return CT_VALUES.map(ct => {
+      const mof = PT_RATIO * (ct / 5);
+      const peak = numericVal * mof;
+      const maxTR = Math.round(ct * MAX_TR_MULTIPLIER);
+      return {
+        maxTR,
+        ct,
+        mof,
+        peakPower: peak === 0 ? "0" : peak.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      };
+    });
+  };
+
+  const powerData = calculatePowerData(displayValue);
+
+  const renderPeakCell = (peakStr: string, isSelected: boolean) => {
+    const val = parseFloat(peakStr.replace(/,/g, ''));
+    const colorClass = isSelected ? 'text-white' : 'text-blue-400';
+    
+    if (val >= 100 && peakStr.includes('.')) {
+      const [intPart, decPart] = peakStr.split('.');
+      return (
+        <div className={`flex items-baseline font-extrabold tabular ${colorClass}`}>
+          <span className="text-[18px]">{intPart}</span>
+          <span className="text-[13px] opacity-80">.{decPart}</span>
+        </div>
+      );
+    }
+    
+    return (
+      <div className={`font-extrabold text-[18px] tabular ${colorClass}`}>
+        {peakStr}
+      </div>
+    );
+  };
+
+  const renderFlashButton = (isTop: boolean) => (
+    <button 
+      onClick={() => toggleFlash()} 
+      className={`relative rounded-2xl flex flex-col items-center justify-center transition-all active:scale-95 border border-white/5 ${isTop ? 'flex-1' : ''} ${isFlashOn ? 'bg-amber-500 text-slate-950 shadow-[0_4px_20px_rgba(245,158,11,0.4)]' : 'bg-slate-700 text-slate-400'}`}
+    >
+      {/* 플래시 포인트 인디케이터: 파란색 점 (플래시 켜짐 상태 표시) */}
+      {isFlashOn && (
+        <div className="absolute top-1.5 right-1.5 w-2 h-2 bg-blue-500 rounded-full shadow-[0_0_10px_rgba(59,130,246,0.9)] animate-pulse z-10"></div>
+      )}
+      <i className={`fa-solid ${isFlashOn ? 'fa-lightbulb' : 'fa-bolt'} text-lg`}></i>
+      <span className="text-[8px] font-bold mt-1 uppercase">{hasFlash ? 'FLASH' : 'LIGHT'}</span>
+    </button>
+  );
+
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 pb-12">
-      {/* Header */}
-      <header className="bg-white border-b border-slate-200 sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white">
-              <TrendingUp size={24} />
-            </div>
-            <div>
-              <h1 className="font-bold text-lg tracking-tight">APEX CALCULATOR</h1>
-              <p className="text-xs text-slate-500 font-medium">Strategic Peak Optimization</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-4">
-            <button 
-              onClick={() => setMode(mode === CalculationMode.RESOURCES ? CalculationMode.RAID_SCORE : CalculationMode.RESOURCES)}
-              className="hidden md:flex items-center gap-2 px-4 py-2 text-sm font-semibold text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-            >
-              <RefreshCw size={16} />
-              {mode === CalculationMode.RESOURCES ? "Raid Mode" : "Resource Mode"}
-            </button>
-            <div className="w-8 h-8 rounded-full bg-slate-200 border border-slate-300"></div>
-          </div>
+    <div className="flex flex-col h-screen bg-slate-900 text-slate-100 max-w-md mx-auto shadow-2xl overflow-hidden select-none relative">
+      
+      {!hasFlash && isFlashOn && (
+        <div className="fixed inset-0 z-[100] bg-white animate-in fade-in duration-300 flex flex-col items-center justify-center cursor-pointer" onClick={() => toggleFlash(false)}>
+          <i className="fa-solid fa-lightbulb text-slate-200 text-6xl animate-pulse"></i>
+          <div className="mt-10 px-8 py-4 border-2 border-slate-200 text-slate-500 rounded-full text-sm font-black tracking-widest uppercase">TAP TO CLOSE</div>
+        </div>
+      )}
+
+      <header className={`h-[44px] flex items-center justify-between pl-4 pr-0 bg-slate-950 text-white z-20 border-b transition-all duration-300 ${isFlashOn ? 'border-amber-500/50 shadow-[0_0_10px_rgba(245,158,11,0.2)]' : 'border-white/5'}`}>
+        <div className="flex items-center gap-2">
+          <i className="fa-solid fa-bolt-lightning text-[12px] text-blue-500"></i>
+          <h1 className="text-[11px] font-extrabold tracking-widest uppercase opacity-90">Peak Pro</h1>
+        </div>
+        <div className="flex items-center h-full">
+          <span className="text-[11px] font-semibold opacity-60 mr-4 tabular">{new Date().getMonth()+1}월 {new Date().getDate()}일</span>
+          <button 
+            onClick={() => window.confirm("종료하시겠습니까?") && window.close()} 
+            className="h-full px-6 flex items-center justify-center text-slate-400 active:text-white active:bg-white/10 active:scale-95 transition-all" 
+            title="나가기"
+          >
+            <i className="fa-solid fa-arrow-right-from-bracket text-lg"></i>
+          </button>
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 py-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
-        {/* Left Column: Controls & Stats */}
-        <div className="lg:col-span-4 space-y-6">
-          <section className="glass-card p-6 rounded-2xl shadow-sm space-y-6">
-            <h2 className="text-sm font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
-              <Zap size={16} /> Parameters
-            </h2>
+      <div className="p-3 bg-slate-800/80 backdrop-blur-sm border-b border-slate-700 shadow-xl relative z-10">
+        <div className="h-[72px] flex items-stretch gap-3">
+          {renderFlashButton(true)}
+          
+          <div className="flex-[4] bg-slate-950 rounded-2xl p-1 flex flex-col items-center justify-center shadow-inner relative overflow-hidden border border-white/5">
+            <span key={lastInputTime} className={`text-5xl font-bold tracking-tight transition-all duration-300 tabular digit-animate ${isActive ? 'text-white' : 'text-slate-600'}`}>
+              {displayValue}
+            </span>
+            <div className={`absolute top-2 right-4 w-1.5 h-1.5 rounded-full transition-colors duration-500 ${isActive ? 'bg-blue-500 animate-pulse' : 'bg-slate-800'}`}></div>
+          </div>
+
+          {renderFlashButton(true)}
+        </div>
+      </div>
+
+      <div className="h-[34px] grid grid-cols-[1fr_1fr_1.3fr_1.7fr] px-2 bg-slate-950 border-b border-white/5 items-center shadow-lg relative z-10">
+        <div className="text-center text-[11px] font-bold text-slate-500 uppercase tracking-wider">Max TR</div>
+        <div className="text-center text-[11px] font-bold text-slate-500 uppercase tracking-wider">CT</div>
+        <div className="text-center text-[11px] font-bold text-amber-400/90 uppercase tracking-wider">MOF</div>
+        <div className="text-center text-[11px] font-bold text-blue-400/90 tracking-wider">
+          <span className="uppercase">Peak</span> 
+          <span className="text-slate-500 ml-0.5 font-medium text-[9px]">[kW]</span>
+        </div>
+      </div>
+
+      <div ref={scrollContainerRef} className={`flex-1 overflow-y-auto bg-slate-900 px-2 py-3 custom-scrollbar ${isScrolling ? 'is-scrolling' : ''}`}>
+        <div className="flex flex-col gap-2">
+          {powerData.map((row, idx) => (
+            <div 
+              key={idx} 
+              onMouseDown={() => onItemPressStart(row, idx)}
+              onMouseUp={() => onItemPressEnd(idx)}
+              onTouchStart={() => onItemPressStart(row, idx)}
+              onTouchEnd={() => onItemPressEnd(idx)}
+              className={`h-[48px] grid grid-cols-[1fr_1fr_1.3fr_1.7fr] items-center rounded-2xl transition-all duration-200 cursor-pointer border ${selectedRowIndex === idx ? 'bg-blue-600 border-blue-400 shadow-[0_4px_15px_rgba(37,99,235,0.3)] scale-[1.01] z-10' : 'bg-slate-800/40 border-slate-700/50 hover:bg-slate-800/60'}`}
+            >
+              <div className="text-center font-semibold text-[13px] tabular">{row.maxTR}</div>
+              <div className="text-center font-semibold text-[13px] tabular opacity-80">{row.ct}</div>
+              <div className={`text-center font-bold text-[15px] tabular ${selectedRowIndex === idx ? 'text-amber-200' : 'text-white'}`}>{row.mof}</div>
+              <div className="flex items-center justify-center">
+                {renderPeakCell(row.peakPower, selectedRowIndex === idx)}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="bg-slate-950 p-3 pb-safe grid grid-cols-3 gap-2 border-t border-white/5 shadow-2xl">
+        {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map(num => (
+          <KeypadButton key={num} label={num} isNumber onClick={() => handleKeyPress(num)} />
+        ))}
+        
+        <KeypadButton 
+          label={
+            <div className="flex flex-col items-center justify-center w-full h-full relative">
+              {isFlashOn && (
+                <div className="absolute top-1.5 right-1.5 w-2 h-2 bg-blue-500 rounded-full shadow-[0_0_10px_rgba(59,130,246,0.9)] animate-pulse z-10"></div>
+              )}
+              <i className={`fa-solid ${isFlashOn ? 'fa-lightbulb' : 'fa-bolt'} text-xl transition-transform ${isFlashOn ? 'scale-110' : ''}`}></i>
+              <span className="text-[8px] font-bold mt-0.5 leading-none uppercase">{hasFlash ? 'FLASH' : 'LIGHT'}</span>
+            </div>
+          }
+          onClick={() => handleKeyPress('FLASH')}
+          className={`
+            ${isFlashOn 
+              ? 'text-slate-950 !bg-amber-500 !border-amber-400 shadow-[0_4px_20px_rgba(245,158,11,0.5)]' 
+              : 'text-amber-500/80 !bg-slate-800/40 !border-white/5'
+            }
+          `}
+        />
+
+        <KeypadButton label="0" isNumber onClick={() => handleKeyPress('0')} />
+
+        <KeypadButton
+          label={<i className="fa-solid fa-delete-left text-xl"></i>}
+          onClick={() => {}}
+          onMouseDown={onBackStart}
+          onMouseUp={onBackEnd}
+          onTouchStart={onBackStart}
+          onTouchEnd={onBackEnd}
+          className="text-blue-400 !bg-slate-800/40 !border-white/5"
+        />
+      </div>
+
+      {aissPopup && (
+        <div className="absolute inset-0 z-[110] flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-6" onClick={() => setAissPopup(null)}>
+          <div className="bg-slate-900 rounded-[2.5rem] w-full max-w-[320px] overflow-hidden animate-in zoom-in-95 duration-200 border border-slate-700 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="bg-slate-950/50 px-8 py-5 flex justify-between items-center border-b border-white/5">
+              <span className="font-bold text-[11px] tracking-widest uppercase text-slate-400">AISS Standard Settings</span>
+              <button onClick={() => setAissPopup(null)} className="text-slate-500 active:text-white transition-colors p-2">
+                <i className="fa-solid fa-xmark text-lg"></i>
+              </button>
+            </div>
             
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-700">Current Amount</label>
-                <input 
-                  type="number" 
-                  value={config.currentAmount}
-                  onChange={(e) => setConfig({...config, currentAmount: Number(e.target.value)})}
-                  className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all font-mono"
-                />
+            <div className="p-8 space-y-6">
+              <div className="bg-black/20 p-5 rounded-[2rem] border border-white/5 text-center">
+                <span className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">예상변압기용량</span>
+                <div className="text-3xl font-bold text-white tabular">{aissPopup.maxTR.toLocaleString()}<span className="text-sm ml-1 text-blue-500 font-medium">kW</span></div>
               </div>
-
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-700">Daily Income</label>
-                <input 
-                  type="number" 
-                  value={config.dailyIncome}
-                  onChange={(e) => setConfig({...config, dailyIncome: Number(e.target.value)})}
-                  className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all font-mono"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-700">Target Goal</label>
-                <input 
-                  type="number" 
-                  value={config.targetAmount}
-                  onChange={(e) => setConfig({...config, targetAmount: Number(e.target.value)})}
-                  className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all font-mono"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-700">Bonus Multiplier (%)</label>
-                <div className="flex gap-4 items-center">
-                  <input 
-                    type="range" 
-                    min="0" 
-                    max="100" 
-                    value={config.bonusPercentage}
-                    onChange={(e) => setConfig({...config, bonusPercentage: Number(e.target.value)})}
-                    className="flex-1 accent-blue-600"
-                  />
-                  <span className="w-12 text-right font-mono font-bold text-blue-600">{config.bonusPercentage}%</span>
+              
+              <div className="grid grid-cols-2 gap-4">
+                <div className="bg-slate-800/50 p-5 rounded-[1.8rem] border border-white/5 text-center">
+                  <span className="text-[9px] font-bold text-blue-400 uppercase mb-2 block">상전류</span>
+                  <div className="text-2xl font-bold text-white tabular">{aissPopup.phaseCurrent}<span className="text-xs ml-0.5 text-blue-500/50 font-medium">A</span></div>
+                </div>
+                <div className="bg-slate-800/50 p-5 rounded-[1.8rem] border border-white/5 text-center">
+                  <span className="text-[9px] font-bold text-emerald-400 uppercase mb-2 block">지락전류</span>
+                  <div className="text-2xl font-bold text-white tabular">{aissPopup.groundCurrent}<span className="text-xs ml-0.5 text-emerald-500/50 font-medium">A</span></div>
                 </div>
               </div>
-            </div>
 
-            <button 
-              onClick={handleAIAnalysis}
-              disabled={isLoadingAI}
-              className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-bold py-4 rounded-xl shadow-lg shadow-blue-200 flex items-center justify-center gap-2 transition-all transform active:scale-[0.98]"
-            >
-              <BrainCircuit size={20} className={isLoadingAI ? "animate-spin" : ""} />
-              {isLoadingAI ? "Analyzing Strategy..." : "Get AI Advice"}
-            </button>
-          </section>
-
-          {/* Quick Metrics */}
-          <div className="grid grid-cols-2 gap-4">
-            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
-              <div className="text-slate-400 mb-1"><Calendar size={18} /></div>
-              <div className="text-2xl font-black text-slate-900">{daysToTarget}</div>
-              <div className="text-xs text-slate-500 font-medium">Days to Peak</div>
-            </div>
-            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
-              <div className="text-blue-500 mb-1"><Target size={18} /></div>
-              <div className="text-2xl font-black text-slate-900">
-                {Math.round((config.currentAmount / config.targetAmount) * 100)}%
+              <div className="bg-amber-500/5 p-5 rounded-[1.8rem] border border-amber-500/20 text-center">
+                <span className="text-[9px] font-bold text-amber-500 uppercase tracking-widest mb-1 block">Time Delay</span>
+                <div className="text-2xl font-bold text-amber-500 tabular">{aissPopup.timeDelay}<span className="text-xs ml-1 opacity-70 font-medium">sec</span></div>
               </div>
-              <div className="text-xs text-slate-500 font-medium">Completion</div>
+
+              <button 
+                onClick={() => setAissPopup(null)} 
+                className="w-full py-5 bg-blue-600 text-white rounded-[1.8rem] font-bold shadow-xl shadow-blue-900/30 uppercase tracking-widest active:scale-95 transition-all border border-blue-400"
+              >
+                확인
+              </button>
             </div>
           </div>
         </div>
-
-        {/* Right Column: Visualization & AI Advice */}
-        <div className="lg:col-span-8 space-y-8">
-          {/* Chart Section */}
-          <section className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
-            <div className="flex items-center justify-between mb-8">
-              <div>
-                <h2 className="text-2xl font-black text-slate-900 tracking-tight">Growth Projection</h2>
-                <p className="text-slate-500 text-sm">Real-time simulation based on current efficiency</p>
-              </div>
-              <div className="flex gap-2">
-                <span className="flex items-center gap-1 text-xs font-bold text-blue-600 bg-blue-50 px-3 py-1 rounded-full border border-blue-100">
-                  <TrendingUp size={12} /> Positive Trend
-                </span>
-              </div>
-            </div>
-            
-            <div className="h-[350px] w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={simulationData}>
-                  <defs>
-                    <linearGradient id="colorAmount" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.1}/>
-                      <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                  <XAxis 
-                    dataKey="date" 
-                    axisLine={false} 
-                    tickLine={false} 
-                    tick={{fontSize: 11, fill: '#94a3b8'}}
-                    interval={7}
-                  />
-                  <YAxis 
-                    axisLine={false} 
-                    tickLine={false} 
-                    tick={{fontSize: 11, fill: '#94a3b8'}}
-                  />
-                  <Tooltip 
-                    contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)' }}
-                    itemStyle={{ fontWeight: 'bold', color: '#1e293b' }}
-                  />
-                  <Area 
-                    type="monotone" 
-                    dataKey="amount" 
-                    stroke="#3b82f6" 
-                    strokeWidth={3} 
-                    fillOpacity={1} 
-                    fill="url(#colorAmount)" 
-                    animationDuration={1500}
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
-          </section>
-
-          {/* AI Advice Section */}
-          {aiAdvice && (
-            <section className="bg-gradient-to-br from-indigo-900 to-slate-900 p-8 rounded-3xl text-white shadow-xl shadow-slate-200 relative overflow-hidden">
-              <div className="absolute top-0 right-0 p-8 opacity-10">
-                <BrainCircuit size={120} />
-              </div>
-              
-              <div className="relative z-10 space-y-6">
-                <div className="flex items-center gap-3 mb-2">
-                  <div className="p-2 bg-indigo-500 rounded-lg">
-                    <Info size={20} />
-                  </div>
-                  <h3 className="text-xl font-bold">Tactical Advisory Report</h3>
-                </div>
-                
-                <p className="text-indigo-100 text-lg leading-relaxed max-w-2xl">
-                  {aiAdvice.summary}
-                </p>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="space-y-4">
-                    <h4 className="text-xs font-bold uppercase tracking-widest text-indigo-300">Strategy Recommendations</h4>
-                    <ul className="space-y-3">
-                      {aiAdvice.recommendations.map((rec, idx) => (
-                        <li key={idx} className="flex items-start gap-3 text-sm">
-                          <ChevronRight size={18} className="text-indigo-400 mt-0.5" />
-                          <span>{rec}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                  
-                  <div className="bg-white/10 backdrop-blur-md rounded-2xl p-6 flex flex-col justify-between">
-                    <div>
-                      <h4 className="text-xs font-bold uppercase tracking-widest text-indigo-300 mb-4">Peak Statistics</h4>
-                      <div className="flex justify-between items-end mb-4">
-                        <div>
-                          <div className="text-xs text-indigo-300">Est. Peak Date</div>
-                          <div className="text-2xl font-black">{aiAdvice.estimatedPeakDate}</div>
-                        </div>
-                        <div className="text-right">
-                          <div className="text-xs text-indigo-300">Efficiency</div>
-                          <div className="text-2xl font-black text-emerald-400">{aiAdvice.efficiencyRating}%</div>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="w-full bg-slate-800/50 h-2 rounded-full overflow-hidden">
-                      <div 
-                        className="h-full bg-emerald-400 rounded-full transition-all duration-1000"
-                        style={{ width: `${aiAdvice.efficiencyRating}%` }}
-                      ></div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </section>
-          )}
-
-          {!aiAdvice && !isLoadingAI && (
-             <div className="flex flex-col items-center justify-center p-12 bg-white rounded-3xl border border-dashed border-slate-300 text-slate-400">
-               <BrainCircuit size={48} className="mb-4 opacity-20" />
-               <p className="text-sm font-medium">Click "Get AI Advice" to generate a custom strategic report.</p>
-             </div>
-          )}
-        </div>
-      </main>
-
-      {/* Footer Branding */}
-      <footer className="max-w-7xl mx-auto px-4 mt-8 flex justify-between items-center text-slate-400 text-xs font-medium">
-        <div>&copy; 2024 Apex Tactical Systems. All rights reserved.</div>
-        <div className="flex gap-4">
-          <a href="#" className="hover:text-slate-600 transition-colors underline decoration-slate-200">System Logs</a>
-          <a href="#" className="hover:text-slate-600 transition-colors underline decoration-slate-200">Documentation</a>
-        </div>
-      </footer>
+      )}
     </div>
   );
 };
+
+interface KeypadButtonProps {
+  label: React.ReactNode;
+  onClick: () => void;
+  className?: string;
+  isNumber?: boolean;
+  onMouseDown?: () => void;
+  onMouseUp?: () => void;
+  onTouchStart?: () => void;
+  onTouchEnd?: () => void;
+}
+
+const KeypadButton: React.FC<KeypadButtonProps> = ({ 
+  label, onClick, className = '', isNumber = false,
+  onMouseDown, onMouseUp, onTouchStart, onTouchEnd
+}) => (
+  <button
+    onClick={onClick}
+    onMouseDown={onMouseDown}
+    onMouseUp={onMouseUp}
+    onTouchStart={onTouchStart}
+    onTouchEnd={onTouchEnd}
+    className={`
+      h-[44px] bg-slate-800/60 active:bg-slate-700/80 text-white 
+      rounded-2xl transition-all active:scale-[0.95] flex items-center justify-center 
+      border border-white/5 shadow-lg tabular relative
+      ${isNumber ? 'text-2xl font-semibold' : ''} 
+      ${className}
+    `}
+  >
+    {label}
+  </button>
+);
 
 export default App;
