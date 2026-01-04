@@ -11,6 +11,7 @@ const App: React.FC = () => {
   const [isActive, setIsActive] = useState(false);
   const [isFlashOn, setIsFlashOn] = useState(false);
   const [hasFlash, setHasFlash] = useState(false); 
+  const [osType, setOsType] = useState<'android' | 'ios' | 'unknown'>('unknown');
   const [isScrolling, setIsScrolling] = useState(false);
   const [selectedRowIndex, setSelectedRowIndex] = useState<number>(() => {
     const saved = localStorage.getItem('selected_index');
@@ -27,6 +28,10 @@ const App: React.FC = () => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    const ua = navigator.userAgent.toLowerCase();
+    if (ua.indexOf("android") > -1) setOsType('android');
+    else if (ua.indexOf("iphone") > -1 || ua.indexOf("ipad") > -1) setOsType('ios');
+    
     initCamera();
   }, []);
 
@@ -211,7 +216,7 @@ const App: React.FC = () => {
       onClick={() => toggleFlash()} 
       className={`relative rounded-2xl flex flex-col items-center justify-center transition-all active:scale-95 border border-white/5 ${isTop ? 'flex-1' : ''} ${isFlashOn ? 'bg-amber-500 text-slate-950 shadow-[0_4px_20px_rgba(245,158,11,0.4)]' : 'bg-slate-700 text-slate-400'}`}
     >
-      {/* 플래시 포인트 인디케이터: 파란색 점 (플래시 켜짐 상태 표시) */}
+      {/* 플래시 포인트 인디케이터: 모든 버튼에 적용 */}
       {isFlashOn && (
         <div className="absolute top-1.5 right-1.5 w-2 h-2 bg-blue-500 rounded-full shadow-[0_0_10px_rgba(59,130,246,0.9)] animate-pulse z-10"></div>
       )}
