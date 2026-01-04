@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { PowerCalculation, AISSSetting } from './types';
 import { CT_VALUES, PT_RATIO, MAX_TR_MULTIPLIER, AISS_CONFIG_TABLE } from './constants';
 
-const APP_VERSION = "v 1.5";
+const APP_VERSION = "v 1.6";
 
 const App: React.FC = () => {
   const [inputDigits, setInputDigits] = useState<string[]>(() => {
@@ -23,6 +23,7 @@ const App: React.FC = () => {
   const [lastInputTime, setLastInputTime] = useState(0);
   const [isCameraInitializing, setIsCameraInitializing] = useState(false);
   
+  const videoRef = useRef<HTMLVideoElement>(null);
   const videoTrackRef = useRef<MediaStreamTrack | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const timerRef = useRef<number | null>(null);
@@ -71,6 +72,9 @@ const App: React.FC = () => {
       streamRef.current.getTracks().forEach(t => t.stop());
       streamRef.current = null;
     }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
   };
 
   const initCamera = async () => {
@@ -79,15 +83,27 @@ const App: React.FC = () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ 
         video: { 
-          facingMode: 'environment'
+          facingMode: 'environment',
+          width: { ideal: 640 },
+          height: { ideal: 480 }
         } 
       });
       
       streamRef.current = stream;
+      
+      // 안드로이드 핵심 대책: 비디오 엘리먼트에 스트림을 연결하여 활성화시킴
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        try {
+          await videoRef.current.play();
+        } catch (e) {
+          console.warn("Video play interrupted, but continuing for flash...");
+        }
+      }
+
       const track = stream.getVideoTracks()[0];
       const capabilities = (track.getCapabilities && track.getCapabilities()) as any;
       
-      // 안드로이드 갤럭시 대응: torch 기능 지원 여부 확인
       if (capabilities && capabilities.torch) {
         setHasFlash(true);
         videoTrackRef.current = track;
@@ -110,7 +126,6 @@ const App: React.FC = () => {
   const toggleFlash = async (state?: boolean) => {
     const newState = state !== undefined ? state : !isFlashOn;
     
-    // 플래시를 끌 때는 즉시 상태 변경 및 스트림 중단 고려
     if (!newState) {
       if (videoTrackRef.current) {
         try {
@@ -118,11 +133,11 @@ const App: React.FC = () => {
         } catch (e) {}
       }
       setIsFlashOn(false);
-      // 배터리 절약을 위해 일정 시간 후 스트림 완전 종료 가능 (여기선 즉시 종료 시 깜빡임 방지를 위해 유지)
+      // 배터리와 카메라 수명을 위해 끄면 스트림 완전 종료
+      stopCamera();
       return;
     }
 
-    // 플래시를 켤 때
     let track = videoTrackRef.current;
     if (!track) {
       track = await initCamera();
@@ -130,23 +145,20 @@ const App: React.FC = () => {
 
     if (track) {
       try {
-        await track.applyConstraints({ 
-          advanced: [{ torch: true }] 
-        } as any);
-        setIsFlashOn(true);
-      } catch (err) {
-        console.error("Torch apply failed:", err);
-        // 트랙이 유효하지 않으면 재초기화 후 시도
-        stopCamera();
-        const retryTrack = await initCamera();
-        if (retryTrack) {
+        // 약간의 지연을 주어 하드웨어가 스트림을 완전히 인지하게 함
+        setTimeout(async () => {
           try {
-            await retryTrack.applyConstraints({ advanced: [{ torch: true }] } as any);
+            await track!.applyConstraints({ 
+              advanced: [{ torch: true }] 
+            } as any);
             setIsFlashOn(true);
           } catch (e) {
-            setIsFlashOn(true); // 하드웨어 오류여도 버튼은 켜짐 상태로 유지(UI 피드백)
+            console.error("Torch apply failed inside timeout:", e);
           }
-        }
+        }, 150);
+      } catch (err) {
+        console.error("Initial Torch apply failed:", err);
+        setIsFlashOn(true);
       }
     } else {
       setIsFlashOn(newState);
@@ -159,7 +171,6 @@ const App: React.FC = () => {
     const handleVisibilityChange = () => {
       if (document.hidden && isFlashOn) {
         toggleFlash(false);
-        stopCamera();
       }
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -278,7 +289,6 @@ const App: React.FC = () => {
   };
 
   const renderFlashButton = (isTop: boolean) => {
-    // 안드로이드는 무조건 표시, iOS는 확인된 경우 표시
     const shouldShow = isAndroid || hasFlash || (!isCameraInitializing && !videoTrackRef.current);
     if (isTop && !shouldShow) return null;
 
@@ -299,6 +309,14 @@ const App: React.FC = () => {
   return (
     <div className="flex flex-col h-screen bg-slate-900 text-slate-100 max-w-md mx-auto shadow-2xl overflow-hidden select-none relative">
       
+      {/* 안드로이드 플래시 작동을 위한 숨겨진 비디오 엘리먼트 */}
+      <video 
+        ref={videoRef} 
+        playsInline 
+        muted 
+        style={{ position: 'absolute', width: '1px', height: '1px', opacity: 0, pointerEvents: 'none' }}
+      />
+
       {isIOS && !hasFlash && isFlashOn && (
         <div className="fixed inset-0 z-[100] bg-white animate-in fade-in duration-300 flex flex-col items-center justify-center cursor-pointer" onClick={() => toggleFlash(false)}>
           <i className="fa-solid fa-lightbulb text-slate-200 text-6xl animate-pulse"></i>
@@ -325,7 +343,7 @@ const App: React.FC = () => {
         </div>
       </header>
 
-      {/* 입력창 영역: 78px로 축소 */}
+      {/* 입력창 높이 78px 유지 */}
       <div className="p-3 bg-slate-800/80 backdrop-blur-sm border-b border-slate-700 shadow-xl relative z-10">
         <div className="h-[78px] flex items-stretch gap-3">
           {renderFlashButton(true)}
@@ -351,7 +369,7 @@ const App: React.FC = () => {
         </div>
       </div>
 
-      {/* 리스트 본문: 행 높이 60px로 축소 */}
+      {/* 행 높이 60px 유지 */}
       <div ref={scrollContainerRef} className={`flex-1 overflow-y-auto bg-slate-900 px-2 py-3 custom-scrollbar ${isScrolling ? 'is-scrolling' : ''}`}>
         <div className="flex flex-col gap-2.5">
           {powerData.map((row, idx) => (
@@ -374,7 +392,7 @@ const App: React.FC = () => {
         </div>
       </div>
 
-      {/* 키패드: 버튼 높이 52px로 축소 */}
+      {/* 키패드 버튼 높이 52px 유지 */}
       <div className="bg-slate-950 p-3 pb-safe grid grid-cols-3 gap-2 border-t border-white/5 shadow-2xl">
         {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map(num => (
           <KeypadButton key={num} label={num} isNumber onClick={() => handleKeyPress(num)} />
