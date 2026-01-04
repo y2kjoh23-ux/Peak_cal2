@@ -1,8 +1,5 @@
-
 {
-  "name": "다른 피크 계산기 v1.8",
-  "description": "",
-  "requestFramePermissions": [
-    "camera"
-  ]
+  "name": "다른 피크 계산기 v2.0",
+  "description": "플래시 기능 제거 및 CLR 버튼 원복 버전",
+  "requestFramePermissions": []
 }

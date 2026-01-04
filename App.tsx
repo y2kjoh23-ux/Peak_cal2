@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { PowerCalculation, AISSSetting } from './types';
 import { CT_VALUES, PT_RATIO, MAX_TR_MULTIPLIER, AISS_CONFIG_TABLE } from './constants';
 
-const APP_VERSION = "v 1.8";
+const APP_VERSION = "v 2.0";
 
 const App: React.FC = () => {
   const [inputDigits, setInputDigits] = useState<string[]>(() => {
@@ -11,9 +11,6 @@ const App: React.FC = () => {
     return saved ? JSON.parse(saved) : ['0', '0', '0', '0'];
   });
   const [isActive, setIsActive] = useState(false);
-  const [isFlashOn, setIsFlashOn] = useState(false);
-  const [isAndroid] = useState(/Android/i.test(navigator.userAgent));
-  const [hasFlash, setHasFlash] = useState(true); 
   const [isScrolling, setIsScrolling] = useState(false);
   const [selectedRowIndex, setSelectedRowIndex] = useState<number>(() => {
     const saved = localStorage.getItem('selected_index');
@@ -21,24 +18,12 @@ const App: React.FC = () => {
   });
   const [aissPopup, setAissPopup] = useState<AISSSetting | null>(null);
   const [lastInputTime, setLastInputTime] = useState(0);
-  const [isCameraInitializing, setIsCameraInitializing] = useState(false);
   
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const videoTrackRef = useRef<MediaStreamTrack | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
   const timerRef = useRef<number | null>(null);
   const scrollTimerRef = useRef<number | null>(null);
   const backLongPressTimerRef = useRef<number | null>(null);
   const itemLongPressTimerRef = useRef<number | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-
-  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
-
-  useEffect(() => {
-    return () => {
-      stopCamera();
-    };
-  }, []);
 
   useEffect(() => {
     localStorage.setItem('selected_index', selectedRowIndex.toString());
@@ -63,103 +48,6 @@ const App: React.FC = () => {
     return () => container?.removeEventListener('scroll', handleScroll);
   }, [handleScroll]);
 
-  const stopCamera = () => {
-    if (videoTrackRef.current) {
-      try {
-        videoTrackRef.current.applyConstraints({ advanced: [{ torch: false }] } as any);
-      } catch (e) {}
-      videoTrackRef.current.stop();
-      videoTrackRef.current = null;
-    }
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(t => t.stop());
-      streamRef.current = null;
-    }
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
-  };
-
-  const initCamera = async (): Promise<MediaStreamTrack | null> => {
-    if (isCameraInitializing) return null;
-    setIsCameraInitializing(true);
-    
-    try {
-      // 안드로이드 특성상 매번 새로운 스트림을 요청하는 것이 가장 확실함
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { 
-          facingMode: 'environment',
-          width: { ideal: 160 },
-          height: { ideal: 120 }
-        } 
-      });
-      
-      streamRef.current = stream;
-      const track = stream.getVideoTracks()[0];
-      
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
-
-      videoTrackRef.current = track;
-      setIsCameraInitializing(false);
-      return track;
-    } catch (err) {
-      console.error("Camera access failed:", err);
-      setIsCameraInitializing(false);
-      return null;
-    }
-  };
-
-  const toggleFlash = async (state?: boolean) => {
-    const newState = state !== undefined ? state : !isFlashOn;
-    
-    if ('vibrate' in navigator) navigator.vibrate(newState ? [40, 20, 40] : 30);
-
-    if (!newState) {
-      setIsFlashOn(false);
-      stopCamera();
-      return;
-    }
-
-    // 켜기 시도 (매번 초기화하여 하드웨어 우선순위 확보)
-    stopCamera();
-    const track = await initCamera();
-
-    if (track) {
-      setIsFlashOn(true);
-      
-      // 안드로이드 핵심: 연속해서 3번 제약 조건을 밀어넣어 하드웨어 반응 유도
-      let count = 0;
-      const interval = setInterval(async () => {
-        try {
-          await track.applyConstraints({ 
-            advanced: [{ torch: true }] 
-          } as any);
-          if (count++ > 2) clearInterval(interval);
-        } catch (e) {
-          if (count++ > 2) clearInterval(interval);
-        }
-      }, 200);
-    } else {
-      // 하드웨어 실패 시 스크린 라이트 모드로 전환
-      setIsFlashOn(true);
-    }
-  };
-
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.hidden && isFlashOn) {
-        toggleFlash(false);
-      }
-    };
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
-  }, [isFlashOn]);
-
   const resetTimer = () => {
     if (timerRef.current) window.clearTimeout(timerRef.current);
     setIsActive(true);
@@ -170,15 +58,11 @@ const App: React.FC = () => {
     resetTimer();
     if ('vibrate' in navigator) navigator.vibrate(12);
     
-    if (key === 'FLASH') {
-      toggleFlash();
-      return;
-    }
     if (key === 'BACK') {
       setInputDigits(prev => ['0', prev[0], prev[1], prev[2]]);
       return;
     }
-    if (key === 'CLEAR_ALL') {
+    if (key === 'CLR') {
       setInputDigits(['0', '0', '0', '0']);
       if ('vibrate' in navigator) navigator.vibrate([50, 30, 50]);
       return;
@@ -191,7 +75,7 @@ const App: React.FC = () => {
 
   const onBackStart = () => {
     backLongPressTimerRef.current = window.setTimeout(() => {
-      handleKeyPress('CLEAR_ALL');
+      handleKeyPress('CLR');
       backLongPressTimerRef.current = null;
     }, 600);
   };
@@ -269,40 +153,9 @@ const App: React.FC = () => {
     );
   };
 
-  const renderFlashButton = (isTop: boolean) => {
-    const shouldShow = isAndroid || hasFlash;
-    if (isTop && !shouldShow) return null;
-
-    return (
-      <button 
-        onClick={() => toggleFlash()} 
-        className={`relative rounded-2xl flex flex-col items-center justify-center transition-all active:scale-95 border border-white/5 ${isTop ? 'flex-1' : ''} ${isFlashOn ? 'bg-amber-500 text-slate-950 shadow-[0_4px_20px_rgba(245,158,11,0.4)]' : 'bg-slate-700 text-slate-400'}`}
-      >
-        {isFlashOn && (
-          <div className="absolute top-1.5 right-1.5 w-2.5 h-2.5 bg-blue-500 rounded-full shadow-[0_0_12px_rgba(59,130,246,0.9)] animate-pulse z-10"></div>
-        )}
-        <i className={`fa-solid ${isFlashOn ? 'fa-lightbulb' : 'fa-bolt'} text-xl transition-transform`}></i>
-        <span className="text-[9px] font-bold mt-0.5 uppercase">LIGHT</span>
-      </button>
-    );
-  };
-
   return (
     <div className="flex flex-col h-screen bg-slate-900 text-slate-100 max-w-md mx-auto shadow-2xl overflow-hidden select-none relative">
       
-      {/* 하드웨어 싱크용 비디오 */}
-      <video ref={videoRef} playsInline muted style={{ position: 'absolute', width: '2px', height: '2px', opacity: 0 }} />
-
-      {/* 조명 모드 백업: 플래시가 안 켜져도 화면 조명을 통해 계량기를 비출 수 있게 함 */}
-      {isFlashOn && (
-        <div className="fixed inset-0 z-[100] bg-white animate-in fade-in duration-500 flex flex-col items-center justify-center cursor-pointer" onClick={() => toggleFlash(false)}>
-          <div className="flex flex-col items-center scale-110">
-            <i className="fa-solid fa-lightbulb text-slate-200 text-8xl animate-pulse"></i>
-            <div className="mt-12 px-10 py-5 border-4 border-slate-100 text-slate-400 rounded-full text-lg font-black tracking-[0.2em] uppercase">TAP TO CLOSE</div>
-          </div>
-        </div>
-      )}
-
       <header className="h-[44px] flex items-center justify-between pl-4 pr-0 bg-slate-950 text-white z-20 border-b border-white/5 shadow-lg">
         <div className="flex items-center gap-2">
           <i className="fa-solid fa-bolt-lightning text-[12px] text-blue-500"></i>
@@ -322,19 +175,15 @@ const App: React.FC = () => {
         </div>
       </header>
 
-      {/* 입력창 높이 78px 고정 */}
+      {/* 입력창 높이 78px 고정 - 플래시 버튼 제거 및 레이아웃 최적화 */}
       <div className="p-3 bg-slate-800/80 backdrop-blur-sm border-b border-slate-700 shadow-xl relative z-10">
-        <div className="h-[78px] flex items-stretch gap-3">
-          {renderFlashButton(true)}
-          
-          <div className="flex-[4] bg-slate-950 rounded-2xl p-1 flex flex-col items-center justify-center shadow-inner relative overflow-hidden border border-white/5">
+        <div className="h-[78px] flex items-stretch">
+          <div className="flex-1 bg-slate-950 rounded-2xl p-1 flex flex-col items-center justify-center shadow-inner relative overflow-hidden border border-white/5">
             <span key={lastInputTime} className={`text-5xl font-bold tracking-tight transition-all duration-300 tabular digit-animate ${isActive ? 'text-white' : 'text-slate-600'}`}>
               {displayValue}
             </span>
             <div className={`absolute top-2 right-4 w-1.5 h-1.5 rounded-full transition-colors duration-500 ${isActive ? 'bg-blue-500 animate-pulse' : 'bg-slate-800'}`}></div>
           </div>
-
-          {renderFlashButton(true)}
         </div>
       </div>
 
@@ -371,24 +220,16 @@ const App: React.FC = () => {
         </div>
       </div>
 
-      {/* 키패드 버튼 높이 52px 고정 */}
+      {/* 키패드 버튼 높이 52px 고정 - CLR 버튼 원복 */}
       <div className="bg-slate-950 p-3 pb-safe grid grid-cols-3 gap-2 border-t border-white/5 shadow-2xl">
         {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map(num => (
           <KeypadButton key={num} label={num} isNumber onClick={() => handleKeyPress(num)} />
         ))}
         
         <KeypadButton 
-          label={
-            <div className="flex flex-col items-center justify-center w-full h-full relative">
-              {isFlashOn && (
-                <div className="absolute top-1.5 right-1.5 w-2.5 h-2.5 bg-blue-500 rounded-full shadow-[0_0_12px_rgba(59,130,246,0.9)] animate-pulse z-10"></div>
-              )}
-              <i className={`fa-solid ${isFlashOn ? 'fa-lightbulb' : 'fa-bolt'} text-xl transition-transform ${isFlashOn ? 'scale-110' : ''}`}></i>
-              <span className="text-[10px] font-bold mt-1 leading-none uppercase">LIGHT</span>
-            </div>
-          }
-          onClick={() => handleKeyPress('FLASH')}
-          className={`${isFlashOn ? 'text-slate-950 !bg-amber-500 !border-amber-400 shadow-[0_4px_20px_rgba(245,158,11,0.5)]' : 'text-amber-500/80 !bg-slate-800/40 !border-white/5'}`}
+          label={<span className="text-xl font-bold">CLR</span>}
+          onClick={() => handleKeyPress('CLR')}
+          className="text-amber-500 !bg-slate-800/40 !border-white/5"
         />
 
         <KeypadButton label="0" isNumber onClick={() => handleKeyPress('0')} />
