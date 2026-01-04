@@ -1,7 +1,5 @@
 {
-  "name": "다른 피크 계산기 v1.1",
+  "name": "다른 피크 계산기 v1.3",
   "description": "",
-  "requestFramePermissions": [
-    "camera"
-  ]
+  "requestFramePermissions": []
 }

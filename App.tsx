@@ -3,6 +3,8 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { PowerCalculation, AISSSetting } from './types';
 import { CT_VALUES, PT_RATIO, MAX_TR_MULTIPLIER, AISS_CONFIG_TABLE } from './constants';
 
+const APP_VERSION = "v 1.3";
+
 const App: React.FC = () => {
   const [inputDigits, setInputDigits] = useState<string[]>(() => {
     const saved = localStorage.getItem('last_input_digits');
@@ -11,7 +13,6 @@ const App: React.FC = () => {
   const [isActive, setIsActive] = useState(false);
   const [isFlashOn, setIsFlashOn] = useState(false);
   const [hasFlash, setHasFlash] = useState(false); 
-  const [osType, setOsType] = useState<'android' | 'ios' | 'unknown'>('unknown');
   const [isScrolling, setIsScrolling] = useState(false);
   const [selectedRowIndex, setSelectedRowIndex] = useState<number>(() => {
     const saved = localStorage.getItem('selected_index');
@@ -19,6 +20,7 @@ const App: React.FC = () => {
   });
   const [aissPopup, setAissPopup] = useState<AISSSetting | null>(null);
   const [lastInputTime, setLastInputTime] = useState(0);
+  const [isCameraInitializing, setIsCameraInitializing] = useState(false);
   
   const videoTrackRef = useRef<MediaStreamTrack | null>(null);
   const timerRef = useRef<number | null>(null);
@@ -27,12 +29,13 @@ const App: React.FC = () => {
   const itemLongPressTimerRef = useRef<number | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
+  // iOS 여부 확인 (화이트 스크린 대체 조명은 iOS에서만 허용)
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+
   useEffect(() => {
-    const ua = navigator.userAgent.toLowerCase();
-    if (ua.indexOf("android") > -1) setOsType('android');
-    else if (ua.indexOf("iphone") > -1 || ua.indexOf("ipad") > -1) setOsType('ios');
-    
-    initCamera();
+    return () => {
+      stopCamera();
+    };
   }, []);
 
   useEffect(() => {
@@ -58,34 +61,78 @@ const App: React.FC = () => {
     return () => container?.removeEventListener('scroll', handleScroll);
   }, [handleScroll]);
 
-  const toggleFlash = async (state?: boolean) => {
-    const newState = state !== undefined ? state : !isFlashOn;
-    if (hasFlash && videoTrackRef.current) {
-      try {
-        await videoTrackRef.current.applyConstraints({ advanced: [{ torch: newState }] } as any);
-      } catch (err) {
-        console.error("Flash error:", err);
-      }
-    } 
-    setIsFlashOn(newState);
-    if ('vibrate' in navigator) navigator.vibrate(newState ? [30, 10, 30] : 20);
+  const stopCamera = () => {
+    if (videoTrackRef.current) {
+      videoTrackRef.current.stop();
+      videoTrackRef.current = null;
+    }
   };
 
   const initCamera = async () => {
+    if (isCameraInitializing) return null;
+    setIsCameraInitializing(true);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { 
+          facingMode: 'environment'
+        } 
+      });
+      
       const track = stream.getVideoTracks()[0];
       const capabilities = (track.getCapabilities && track.getCapabilities()) as any;
+      
       if (capabilities && capabilities.torch) {
         setHasFlash(true);
         videoTrackRef.current = track;
+        setIsCameraInitializing(false);
+        return track;
       } else {
         setHasFlash(false);
-        stream.getTracks().forEach(t => t.stop());
+        track.stop();
+        setIsCameraInitializing(false);
+        return null;
       }
     } catch (err) {
+      console.error("Camera init failed:", err);
       setHasFlash(false);
+      setIsCameraInitializing(false);
+      return null;
     }
+  };
+
+  const toggleFlash = async (state?: boolean) => {
+    const newState = state !== undefined ? state : !isFlashOn;
+    
+    let track = videoTrackRef.current;
+    if (newState && !track) {
+      track = await initCamera();
+    }
+
+    if (track) {
+      try {
+        await track.applyConstraints({ 
+          advanced: [{ torch: newState }] 
+        } as any);
+        setIsFlashOn(newState);
+      } catch (err) {
+        console.error("Flash toggle failed:", err);
+        const retryTrack = await initCamera();
+        if (retryTrack) {
+          try {
+            await retryTrack.applyConstraints({ advanced: [{ torch: newState }] } as any);
+            setIsFlashOn(newState);
+          } catch (e) {
+            setIsFlashOn(newState); 
+          }
+        } else {
+          setIsFlashOn(newState);
+        }
+      }
+    } else {
+      setIsFlashOn(newState);
+    }
+    
+    if ('vibrate' in navigator) navigator.vibrate(newState ? [30, 10, 30] : 20);
   };
 
   useEffect(() => {
@@ -95,10 +142,6 @@ const App: React.FC = () => {
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
-      if (videoTrackRef.current) {
-        videoTrackRef.current.applyConstraints({ advanced: [{ torch: false }] } as any);
-        videoTrackRef.current.stop();
-      }
     };
   }, [isFlashOn]);
 
@@ -198,37 +241,42 @@ const App: React.FC = () => {
       const [intPart, decPart] = peakStr.split('.');
       return (
         <div className={`flex items-baseline font-extrabold tabular ${colorClass}`}>
-          <span className="text-[18px]">{intPart}</span>
-          <span className="text-[13px] opacity-80">.{decPart}</span>
+          <span className="text-[26px]">{intPart}</span>
+          <span className="text-[18px] opacity-80">.{decPart}</span>
         </div>
       );
     }
     
     return (
-      <div className={`font-extrabold text-[18px] tabular ${colorClass}`}>
+      <div className={`font-extrabold text-[26px] tabular ${colorClass}`}>
         {peakStr}
       </div>
     );
   };
 
-  const renderFlashButton = (isTop: boolean) => (
-    <button 
-      onClick={() => toggleFlash()} 
-      className={`relative rounded-2xl flex flex-col items-center justify-center transition-all active:scale-95 border border-white/5 ${isTop ? 'flex-1' : ''} ${isFlashOn ? 'bg-amber-500 text-slate-950 shadow-[0_4px_20px_rgba(245,158,11,0.4)]' : 'bg-slate-700 text-slate-400'}`}
-    >
-      {/* 플래시 포인트 인디케이터: 모든 버튼에 적용 */}
-      {isFlashOn && (
-        <div className="absolute top-1.5 right-1.5 w-2 h-2 bg-blue-500 rounded-full shadow-[0_0_10px_rgba(59,130,246,0.9)] animate-pulse z-10"></div>
-      )}
-      <i className={`fa-solid ${isFlashOn ? 'fa-lightbulb' : 'fa-bolt'} text-lg`}></i>
-      <span className="text-[8px] font-bold mt-1 uppercase">{hasFlash ? 'FLASH' : 'LIGHT'}</span>
-    </button>
-  );
+  const renderFlashButton = (isTop: boolean) => {
+    // 상단 사이드 버튼은 하드웨어 플래시 지원이 확인된 경우에만 자동으로 표시
+    if (isTop && !hasFlash) return null;
+
+    return (
+      <button 
+        onClick={() => toggleFlash()} 
+        className={`relative rounded-2xl flex flex-col items-center justify-center transition-all active:scale-95 border border-white/5 ${isTop ? 'flex-1' : ''} ${isFlashOn ? 'bg-amber-500 text-slate-950 shadow-[0_4px_20px_rgba(245,158,11,0.4)]' : 'bg-slate-700 text-slate-400'}`}
+      >
+        {isFlashOn && (
+          <div className="absolute top-1.5 right-1.5 w-2.5 h-2.5 bg-blue-500 rounded-full shadow-[0_0_12px_rgba(59,130,246,0.9)] animate-pulse z-10"></div>
+        )}
+        <i className={`fa-solid ${isFlashOn ? 'fa-lightbulb' : 'fa-bolt'} text-2xl transition-transform`}></i>
+        <span className="text-[9px] font-bold mt-1 uppercase">{hasFlash ? 'FLASH' : 'LIGHT'}</span>
+      </button>
+    );
+  };
 
   return (
     <div className="flex flex-col h-screen bg-slate-900 text-slate-100 max-w-md mx-auto shadow-2xl overflow-hidden select-none relative">
       
-      {!hasFlash && isFlashOn && (
+      {/* 안드로이드에서는 기대되지 않는 동작이므로, iOS 기기에서 하드웨어가 없을 때만 화이트 스크린 조명 활성화 */}
+      {isIOS && !hasFlash && isFlashOn && (
         <div className="fixed inset-0 z-[100] bg-white animate-in fade-in duration-300 flex flex-col items-center justify-center cursor-pointer" onClick={() => toggleFlash(false)}>
           <i className="fa-solid fa-lightbulb text-slate-200 text-6xl animate-pulse"></i>
           <div className="mt-10 px-8 py-4 border-2 border-slate-200 text-slate-500 rounded-full text-sm font-black tracking-widest uppercase">TAP TO CLOSE</div>
@@ -238,14 +286,16 @@ const App: React.FC = () => {
       <header className={`h-[44px] flex items-center justify-between pl-4 pr-0 bg-slate-950 text-white z-20 border-b transition-all duration-300 ${isFlashOn ? 'border-amber-500/50 shadow-[0_0_10px_rgba(245,158,11,0.2)]' : 'border-white/5'}`}>
         <div className="flex items-center gap-2">
           <i className="fa-solid fa-bolt-lightning text-[12px] text-blue-500"></i>
-          <h1 className="text-[11px] font-extrabold tracking-widest uppercase opacity-90">Peak Pro</h1>
+          <div className="flex items-baseline">
+            <h1 className="text-[12px] font-extrabold tracking-widest uppercase opacity-90">Peak Pro</h1>
+            <span className="text-[8px] font-bold ml-1.5 opacity-40 tabular">{APP_VERSION}</span>
+          </div>
         </div>
         <div className="flex items-center h-full">
           <span className="text-[11px] font-semibold opacity-60 mr-4 tabular">{new Date().getMonth()+1}월 {new Date().getDate()}일</span>
           <button 
             onClick={() => window.confirm("종료하시겠습니까?") && window.close()} 
             className="h-full px-6 flex items-center justify-center text-slate-400 active:text-white active:bg-white/10 active:scale-95 transition-all" 
-            title="나가기"
           >
             <i className="fa-solid fa-arrow-right-from-bracket text-lg"></i>
           </button>
@@ -253,7 +303,7 @@ const App: React.FC = () => {
       </header>
 
       <div className="p-3 bg-slate-800/80 backdrop-blur-sm border-b border-slate-700 shadow-xl relative z-10">
-        <div className="h-[72px] flex items-stretch gap-3">
+        <div className="h-[84px] flex items-stretch gap-3">
           {renderFlashButton(true)}
           
           <div className="flex-[4] bg-slate-950 rounded-2xl p-1 flex flex-col items-center justify-center shadow-inner relative overflow-hidden border border-white/5">
@@ -267,18 +317,18 @@ const App: React.FC = () => {
         </div>
       </div>
 
-      <div className="h-[34px] grid grid-cols-[1fr_1fr_1.3fr_1.7fr] px-2 bg-slate-950 border-b border-white/5 items-center shadow-lg relative z-10">
-        <div className="text-center text-[11px] font-bold text-slate-500 uppercase tracking-wider">Max TR</div>
-        <div className="text-center text-[11px] font-bold text-slate-500 uppercase tracking-wider">CT</div>
-        <div className="text-center text-[11px] font-bold text-amber-400/90 uppercase tracking-wider">MOF</div>
-        <div className="text-center text-[11px] font-bold text-blue-400/90 tracking-wider">
+      <div className="h-[40px] grid grid-cols-[1fr_1fr_1.3fr_1.7fr] px-2 bg-slate-950 border-b border-white/5 items-center shadow-lg relative z-10">
+        <div className="text-center text-[12px] font-bold text-slate-500 uppercase tracking-wider">Max TR</div>
+        <div className="text-center text-[12px] font-bold text-slate-500 uppercase tracking-wider">CT</div>
+        <div className="text-center text-[12px] font-bold text-amber-400/90 uppercase tracking-wider">MOF</div>
+        <div className="text-center text-[12px] font-bold text-blue-400/90 tracking-wider">
           <span className="uppercase">Peak</span> 
-          <span className="text-slate-500 ml-0.5 font-medium text-[9px]">[kW]</span>
+          <span className="text-slate-500 ml-1 font-medium text-[9px]">[kW]</span>
         </div>
       </div>
 
       <div ref={scrollContainerRef} className={`flex-1 overflow-y-auto bg-slate-900 px-2 py-3 custom-scrollbar ${isScrolling ? 'is-scrolling' : ''}`}>
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-3">
           {powerData.map((row, idx) => (
             <div 
               key={idx} 
@@ -286,11 +336,11 @@ const App: React.FC = () => {
               onMouseUp={() => onItemPressEnd(idx)}
               onTouchStart={() => onItemPressStart(row, idx)}
               onTouchEnd={() => onItemPressEnd(idx)}
-              className={`h-[48px] grid grid-cols-[1fr_1fr_1.3fr_1.7fr] items-center rounded-2xl transition-all duration-200 cursor-pointer border ${selectedRowIndex === idx ? 'bg-blue-600 border-blue-400 shadow-[0_4px_15px_rgba(37,99,235,0.3)] scale-[1.01] z-10' : 'bg-slate-800/40 border-slate-700/50 hover:bg-slate-800/60'}`}
+              className={`h-[64px] grid grid-cols-[1fr_1fr_1.3fr_1.7fr] items-center rounded-2xl transition-all duration-200 cursor-pointer border ${selectedRowIndex === idx ? 'bg-blue-600 border-blue-400 shadow-[0_8px_25px_rgba(37,99,235,0.4)] scale-[1.01] z-10' : 'bg-slate-800/40 border-slate-700/50 hover:bg-slate-800/60'}`}
             >
-              <div className="text-center font-semibold text-[13px] tabular">{row.maxTR}</div>
-              <div className="text-center font-semibold text-[13px] tabular opacity-80">{row.ct}</div>
-              <div className={`text-center font-bold text-[15px] tabular ${selectedRowIndex === idx ? 'text-amber-200' : 'text-white'}`}>{row.mof}</div>
+              <div className="text-center font-bold text-[18px] tabular">{row.maxTR}</div>
+              <div className="text-center font-semibold text-[18px] tabular opacity-80">{row.ct}</div>
+              <div className={`text-center font-bold text-[21px] tabular ${selectedRowIndex === idx ? 'text-amber-200' : 'text-white'}`}>{row.mof}</div>
               <div className="flex items-center justify-center">
                 {renderPeakCell(row.peakPower, selectedRowIndex === idx)}
               </div>
@@ -299,7 +349,7 @@ const App: React.FC = () => {
         </div>
       </div>
 
-      <div className="bg-slate-950 p-3 pb-safe grid grid-cols-3 gap-2 border-t border-white/5 shadow-2xl">
+      <div className="bg-slate-950 p-3 pb-safe grid grid-cols-3 gap-3 border-t border-white/5 shadow-2xl">
         {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map(num => (
           <KeypadButton key={num} label={num} isNumber onClick={() => handleKeyPress(num)} />
         ))}
@@ -308,25 +358,20 @@ const App: React.FC = () => {
           label={
             <div className="flex flex-col items-center justify-center w-full h-full relative">
               {isFlashOn && (
-                <div className="absolute top-1.5 right-1.5 w-2 h-2 bg-blue-500 rounded-full shadow-[0_0_10px_rgba(59,130,246,0.9)] animate-pulse z-10"></div>
+                <div className="absolute top-1.5 right-1.5 w-2.5 h-2.5 bg-blue-500 rounded-full shadow-[0_0_12px_rgba(59,130,246,0.9)] animate-pulse z-10"></div>
               )}
-              <i className={`fa-solid ${isFlashOn ? 'fa-lightbulb' : 'fa-bolt'} text-xl transition-transform ${isFlashOn ? 'scale-110' : ''}`}></i>
-              <span className="text-[8px] font-bold mt-0.5 leading-none uppercase">{hasFlash ? 'FLASH' : 'LIGHT'}</span>
+              <i className={`fa-solid ${isFlashOn ? 'fa-lightbulb' : 'fa-bolt'} text-2xl transition-transform ${isFlashOn ? 'scale-110' : ''}`}></i>
+              <span className="text-[10px] font-bold mt-1 leading-none uppercase">{hasFlash ? 'FLASH' : 'LIGHT'}</span>
             </div>
           }
           onClick={() => handleKeyPress('FLASH')}
-          className={`
-            ${isFlashOn 
-              ? 'text-slate-950 !bg-amber-500 !border-amber-400 shadow-[0_4px_20px_rgba(245,158,11,0.5)]' 
-              : 'text-amber-500/80 !bg-slate-800/40 !border-white/5'
-            }
-          `}
+          className={`${isFlashOn ? 'text-slate-950 !bg-amber-500 !border-amber-400 shadow-[0_4px_20px_rgba(245,158,11,0.5)]' : 'text-amber-500/80 !bg-slate-800/40 !border-white/5'}`}
         />
 
         <KeypadButton label="0" isNumber onClick={() => handleKeyPress('0')} />
 
         <KeypadButton
-          label={<i className="fa-solid fa-delete-left text-xl"></i>}
+          label={<i className="fa-solid fa-delete-left text-2xl"></i>}
           onClick={() => {}}
           onMouseDown={onBackStart}
           onMouseUp={onBackEnd}
@@ -404,10 +449,10 @@ const KeypadButton: React.FC<KeypadButtonProps> = ({
     onTouchStart={onTouchStart}
     onTouchEnd={onTouchEnd}
     className={`
-      h-[44px] bg-slate-800/60 active:bg-slate-700/80 text-white 
+      h-[58px] bg-slate-800/60 active:bg-slate-700/80 text-white 
       rounded-2xl transition-all active:scale-[0.95] flex items-center justify-center 
       border border-white/5 shadow-lg tabular relative
-      ${isNumber ? 'text-2xl font-semibold' : ''} 
+      ${isNumber ? 'text-3xl font-semibold' : ''} 
       ${className}
     `}
   >
