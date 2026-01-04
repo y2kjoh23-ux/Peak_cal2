@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { PowerCalculation, AISSSetting } from './types';
 import { CT_VALUES, PT_RATIO, MAX_TR_MULTIPLIER, AISS_CONFIG_TABLE } from './constants';
 
-const APP_VERSION = "v 1.6";
+const APP_VERSION = "v 1.7";
 
 const App: React.FC = () => {
   const [inputDigits, setInputDigits] = useState<string[]>(() => {
@@ -13,7 +13,7 @@ const App: React.FC = () => {
   const [isActive, setIsActive] = useState(false);
   const [isFlashOn, setIsFlashOn] = useState(false);
   const [isAndroid] = useState(/Android/i.test(navigator.userAgent));
-  const [hasFlash, setHasFlash] = useState(false); 
+  const [hasFlash, setHasFlash] = useState(true); // 안드로이드는 일단 있다고 가정
   const [isScrolling, setIsScrolling] = useState(false);
   const [selectedRowIndex, setSelectedRowIndex] = useState<number>(() => {
     const saved = localStorage.getItem('selected_index');
@@ -77,47 +77,45 @@ const App: React.FC = () => {
     }
   };
 
-  const initCamera = async () => {
+  const initCamera = async (): Promise<MediaStreamTrack | null> => {
     if (isCameraInitializing) return null;
     setIsCameraInitializing(true);
+    
     try {
+      // 해상도를 낮게 설정하여 하드웨어 부담을 줄임 (플래시에 집중)
       const stream = await navigator.mediaDevices.getUserMedia({ 
         video: { 
           facingMode: 'environment',
-          width: { ideal: 640 },
-          height: { ideal: 480 }
+          width: { ideal: 160 },
+          height: { ideal: 120 }
         } 
       });
       
       streamRef.current = stream;
+      const track = stream.getVideoTracks()[0];
       
-      // 안드로이드 핵심 대책: 비디오 엘리먼트에 스트림을 연결하여 활성화시킴
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        try {
-          await videoRef.current.play();
-        } catch (e) {
-          console.warn("Video play interrupted, but continuing for flash...");
-        }
+        // 메타데이터 로드 대기 후 재생 시작
+        await new Promise((resolve) => {
+          if (videoRef.current) {
+            videoRef.current.onloadedmetadata = () => resolve(true);
+          } else resolve(false);
+        });
+        await videoRef.current.play();
       }
 
-      const track = stream.getVideoTracks()[0];
+      // 트랙 상태 확인을 위해 약간의 지연
+      await new Promise(r => setTimeout(r, 200));
+
       const capabilities = (track.getCapabilities && track.getCapabilities()) as any;
       
-      if (capabilities && capabilities.torch) {
-        setHasFlash(true);
-        videoTrackRef.current = track;
-        setIsCameraInitializing(false);
-        return track;
-      } else {
-        setHasFlash(false);
-        stopCamera();
-        setIsCameraInitializing(false);
-        return null;
-      }
+      // 만약 capabilities에서 torch가 없다고 나와도, 안드로이드 크롬 버그일 수 있으므로 일단 시도함
+      videoTrackRef.current = track;
+      setIsCameraInitializing(false);
+      return track;
     } catch (err) {
-      console.error("Flash init failed:", err);
-      setHasFlash(false);
+      console.error("Camera access failed:", err);
       setIsCameraInitializing(false);
       return null;
     }
@@ -126,6 +124,8 @@ const App: React.FC = () => {
   const toggleFlash = async (state?: boolean) => {
     const newState = state !== undefined ? state : !isFlashOn;
     
+    if ('vibrate' in navigator) navigator.vibrate(newState ? [30, 10, 30] : 20);
+
     if (!newState) {
       if (videoTrackRef.current) {
         try {
@@ -133,38 +133,40 @@ const App: React.FC = () => {
         } catch (e) {}
       }
       setIsFlashOn(false);
-      // 배터리와 카메라 수명을 위해 끄면 스트림 완전 종료
-      stopCamera();
+      stopCamera(); // 완전히 끔
       return;
     }
 
+    // 켜기 시도
     let track = videoTrackRef.current;
-    if (!track) {
+    if (!track || track.readyState === 'ended') {
       track = await initCamera();
     }
 
     if (track) {
-      try {
-        // 약간의 지연을 주어 하드웨어가 스트림을 완전히 인지하게 함
-        setTimeout(async () => {
-          try {
-            await track!.applyConstraints({ 
-              advanced: [{ torch: true }] 
-            } as any);
+      const applyTorch = async (retryCount = 0) => {
+        try {
+          // 안드로이드 특정 기기는 'torch' 설정을 여러 번 밀어넣어야 반응함
+          await track!.applyConstraints({ 
+            advanced: [{ torch: true }] 
+          } as any);
+          setIsFlashOn(true);
+        } catch (err) {
+          if (retryCount < 3) {
+            setTimeout(() => applyTorch(retryCount + 1), 300);
+          } else {
+            console.error("Flash final failure", err);
+            // 최후의 수단: iOS 방식처럼 화면 조명이라도 켜지게 상태 유지
             setIsFlashOn(true);
-          } catch (e) {
-            console.error("Torch apply failed inside timeout:", e);
           }
-        }, 150);
-      } catch (err) {
-        console.error("Initial Torch apply failed:", err);
-        setIsFlashOn(true);
-      }
+        }
+      };
+      
+      // 초기 지연 후 실행 (하드웨어 웜업)
+      setTimeout(() => applyTorch(), 300);
     } else {
       setIsFlashOn(newState);
     }
-    
-    if ('vibrate' in navigator) navigator.vibrate(newState ? [30, 10, 30] : 20);
   };
 
   useEffect(() => {
@@ -289,7 +291,8 @@ const App: React.FC = () => {
   };
 
   const renderFlashButton = (isTop: boolean) => {
-    const shouldShow = isAndroid || hasFlash || (!isCameraInitializing && !videoTrackRef.current);
+    // 안드로이드는 항상 표시, iOS는 플래시가 확인되었거나 초기 상태일 때 표시
+    const shouldShow = isAndroid || hasFlash;
     if (isTop && !shouldShow) return null;
 
     return (
@@ -309,12 +312,12 @@ const App: React.FC = () => {
   return (
     <div className="flex flex-col h-screen bg-slate-900 text-slate-100 max-w-md mx-auto shadow-2xl overflow-hidden select-none relative">
       
-      {/* 안드로이드 플래시 작동을 위한 숨겨진 비디오 엘리먼트 */}
+      {/* 안드로이드 동기화를 위해 필요한 비디오 싱크 (최소 크기로 유지) */}
       <video 
         ref={videoRef} 
         playsInline 
         muted 
-        style={{ position: 'absolute', width: '1px', height: '1px', opacity: 0, pointerEvents: 'none' }}
+        style={{ position: 'absolute', width: '2px', height: '2px', top: 0, left: 0, opacity: 0.01, pointerEvents: 'none', zIndex: -1 }}
       />
 
       {isIOS && !hasFlash && isFlashOn && (
@@ -343,7 +346,7 @@ const App: React.FC = () => {
         </div>
       </header>
 
-      {/* 입력창 높이 78px 유지 */}
+      {/* 입력창 높이 78px */}
       <div className="p-3 bg-slate-800/80 backdrop-blur-sm border-b border-slate-700 shadow-xl relative z-10">
         <div className="h-[78px] flex items-stretch gap-3">
           {renderFlashButton(true)}
@@ -369,7 +372,7 @@ const App: React.FC = () => {
         </div>
       </div>
 
-      {/* 행 높이 60px 유지 */}
+      {/* 행 높이 60px */}
       <div ref={scrollContainerRef} className={`flex-1 overflow-y-auto bg-slate-900 px-2 py-3 custom-scrollbar ${isScrolling ? 'is-scrolling' : ''}`}>
         <div className="flex flex-col gap-2.5">
           {powerData.map((row, idx) => (
@@ -392,7 +395,7 @@ const App: React.FC = () => {
         </div>
       </div>
 
-      {/* 키패드 버튼 높이 52px 유지 */}
+      {/* 키패드 버튼 높이 52px */}
       <div className="bg-slate-950 p-3 pb-safe grid grid-cols-3 gap-2 border-t border-white/5 shadow-2xl">
         {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map(num => (
           <KeypadButton key={num} label={num} isNumber onClick={() => handleKeyPress(num)} />
